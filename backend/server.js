@@ -1,113 +1,43 @@
-import 'dotenv/config';
-import express from 'express';
-import cors from 'cors';
+// Entry point: reads configuration, creates the Gemini client, and starts listening.
+// Locally the values come from backend/.env; on Cloud Run they come from the
+// service's environment variables (set with --env-vars-file or --set-secrets).
+import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
+import { createApp } from './app.js';
 
-// Create the Express application. Express handles our backend routes.
-const app = express();
+dotenv.config({ quiet: true });
 
-// Use Cloud Run's PORT value when deployed, or the port value from backend/.env locally.
-// If neither is set, the backend runs on port 3001.
-const port = process.env.PORT || 3001;
+// Cloud Run tells the container which port to use through PORT (normally 8080).
+// Locally we fall back to 3001 so the frontend's default URL works.
+const port = Number(process.env.PORT) || 3001;
 
-// Read allowedOrigins from backend/.env as a comma-separated list.
-// Example: allowedOrigins=http://localhost:5173,http://127.0.0.1:5173
-const allowedOrigins = process.env.allowedOrigins
-  ? process.env.allowedOrigins.split(',').map((origin) => origin.trim())
-  : ['http://localhost:5173', 'http://127.0.0.1:5173'];
+// Comma-separated list of frontend origins allowed to call this backend.
+const allowedOrigins = (process.env.allowedOrigins || 'http://localhost:5173,http://127.0.0.1:5173')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 
-// Enable CORS (Cross-Origin Resource Sharing - front-end and backend on different servers) only for the frontend URLs in allowedOrigins.
-// This includes local development and the deployed Firebase frontend.
-app.use(cors({ origin: allowedOrigins }));
+// Newer accounts cannot use gemini-2.5-flash (the starter's model), so default to a current one.
+// geminiAskAnythingModel is still read so the instructor's .env files keep working.
+const model = process.env.GEMINI_MODEL || process.env.geminiAskAnythingModel || 'gemini-3.5-flash-lite';
 
-// Tell Express to parse incoming JSON request bodies.
-// This lets us read request.body.message in the /api/askanything route.
-app.use(express.json());
+const askAnythingPrompt = process.env.askAnythingPrompt ||
+  'You answer questions about Smart Speech Coach, a service that helps people practice speeches, ' +
+  'improve delivery, organize ideas, reduce speaking anxiety, and get simple coaching feedback using ' +
+  'machine learning. If the user asks about something unrelated, briefly steer them back to Smart ' +
+  'Speech Coach. Keep the answer to 1-4 sentences.';
 
-// Create the Gemini API client.
-// The API key is loaded from backend/.env through dotenv.
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+// The API key stays on the server; the browser never sees it.
+// A 30-second timeout keeps a slow Gemini call from holding the request open indefinitely.
+const ai = process.env.GEMINI_API_KEY
+  ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, httpOptions: { timeout: 30000 } })
+  : null;
 
-// The Ask Anything prompt is loaded from backend/.env.
-// Keeping it in .env lets us change the agent instructions without editing code.
-const askAnythingPrompt = process.env.askAnythingPrompt;
+if (!ai) {
+  console.warn('GEMINI_API_KEY is not set: /api/health works, but AI routes will return 503.');
+}
 
-// The Gemini model for Ask Anything is also loaded from backend/.env.
-const geminiAskAnythingModel = process.env.geminiAskAnythingModel;
-
-// A small test route. If this returns { status: "ok" },
-// the backend server is running correctly.
-// currently not invoked by front-end but, tester can use to make sure
-// backend is running
-app.get('/api/health', (request, response) => {
-  response.json({ status: 'ok' });
-});
-
-// Ask Anything endpoint
-// This route receives a user's question from the frontend,
-// sends it to Gemini, and returns Gemini's answer.
-app.post('/api/askanything', async (request, response) => {
-  // Pull the message out of the JSON request body and remove extra spaces.
-  const message = request.body?.message?.trim();
-
-  // Stop early if the user submitted an empty message.
-  if (!message) {
-    return response.status(400).json({
-      error: 'Please enter a question.',
-    });
-  }
-
-  // Stop early if the Gemini key has not been configured.
-  // The real key should live only in backend/.env.
-  if (!process.env.GEMINI_API_KEY) {
-    return response.status(500).json({
-      error: 'Gemini API key is not configured.',
-    });
-  }
-
-  // Stop early if the Ask Anything prompt has not been configured.
-  // The prompt should live in backend/.env as askAnythingPrompt.
-  if (!askAnythingPrompt) {
-    return response.status(500).json({
-      error: 'Ask Anything prompt is not configured.',
-    });
-  }
-
-  // Stop early if the Gemini model name has not been configured.
-  // The model should live in backend/.env as geminiAskAnythingModel.
-  if (!geminiAskAnythingModel) {
-    return response.status(500).json({
-      error: 'Ask Anything Gemini model is not configured.',
-    });
-  }
-
-  try {
-    // Combine the configured agent instructions with the user's actual question.
-    const prompt = `${askAnythingPrompt}
-
-User question: ${message}`;
-
-    // Ask Gemini for a response using the Interactions API.
-    const interaction = await ai.interactions.create({
-      model: geminiAskAnythingModel,
-      input: prompt,
-    });
-
-    // Send only the final answer text back to the frontend.
-    response.json({
-      answer: interaction.output_text,
-    });
-  } catch (error) {
-    // Log the real error for the developer, but send the user
-    // a simple message that does not expose internal details.
-    console.error('Gemini request failed:', error);
-    response.status(500).json({
-      error: 'Smart Speech Coach could not answer right now.',
-    });
-  }
-});
-
-// Start the backend and print the local URL in the terminal.
-app.listen(port, () => {
-  console.log(`Smart Speech Coach backend running on http://localhost:${port}`);
+createApp({ ai, model, askAnythingPrompt, allowedOrigins }).listen(port, () => {
+  console.log(`Smart Speech Coach backend listening on port ${port} (model: ${model})`);
+  console.log(`Allowed frontend origins: ${allowedOrigins.join(', ')}`);
 });

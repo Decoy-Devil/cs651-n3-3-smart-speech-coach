@@ -1,0 +1,12 @@
+# Files NOT uploaded by `gcloud run deploy --source .`
+# Without this file, backend/.env (with the Gemini key) would be uploaded and baked into the image.
+.gcloudignore
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+!.env.cloudrun.example
+node_modules/
+test/
+*.log
