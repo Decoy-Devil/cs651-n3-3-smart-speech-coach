@@ -1,0 +1,10 @@
+# Files NOT uploaded by `gcloud run deploy --source frontend`.
+# Cloud Run builds the app itself (npm ci + npm run gcp-build), so local builds and installs stay home.
+.gcloudignore
+.git
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+*.log
